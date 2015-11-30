@@ -37,7 +37,9 @@ namespace cereal
   //! An exception thrown when rapidjson fails an internal assertion
   /*! @ingroup Utility */
   struct RapidJSONException : Exception
-  { RapidJSONException( const char * what_ ) : Exception( what_ ) {} };
+  {
+	  RapidJSONException( const char * what_ ) : Exception( what_ ){}
+  };
 }
 
 // Override rapidjson assertions to throw exceptions by default
@@ -60,6 +62,10 @@ namespace cereal
 
 namespace cereal
 {
+	struct ParseError : Exception {
+		  size_t offset;
+		  ParseError( const char * what_, size_t off ) : Exception( what_ ), offset(off) {}
+	};
   // ######################################################################
   //! An output archive designed to save data to JSON
   /*! This archive uses RapidJSON to build serialie data to JSON.
@@ -155,6 +161,18 @@ namespace cereal
       {
         if (itsNodeStack.top() == NodeType::InObject)
           itsWriter.EndObject();
+      }
+
+      std::locale
+	  getloc() const
+      {
+    	  return itsWriteStream.getloc();
+      }
+      template < typename Manip >
+      void
+	  apply_manipulator(Manip const& m)
+      {
+    	  itsWriteStream.apply_manipulator(m);
       }
 
       //! Saves some binary data, encoded as a base64 string, with an optional name
@@ -396,8 +414,8 @@ namespace cereal
       typedef JSONValue::ConstMemberIterator MemberIterator;
       typedef JSONValue::ConstValueIterator ValueIterator;
       typedef rapidjson::Document::GenericValue GenericValue;
-
     public:
+      static const size_t npos = std::numeric_limits<size_t>::max();
       /*! @name Common Functionality
           Common use cases for directly interacting with an JSONInputArchive */
       //! @{
@@ -410,7 +428,14 @@ namespace cereal
         itsReadStream(stream)
       {
         itsDocument.ParseStream<0>(itsReadStream);
-        itsIteratorStack.emplace_back(itsDocument.MemberBegin(), itsDocument.MemberEnd());
+        if (itsDocument.HasParseError()) {
+        	throw ParseError(itsDocument.GetParseError(), itsDocument.GetErrorOffset());
+        }
+        if (itsDocument.IsArray()) {
+        	itsIteratorStack.emplace_back(itsDocument.Begin(), itsDocument.End());
+        } else {
+        	itsIteratorStack.emplace_back(itsDocument.MemberBegin(), itsDocument.MemberEnd());
+        }
       }
 
       //! Loads some binary data, encoded as a base64 string
@@ -447,14 +472,21 @@ namespace cereal
       class Iterator
       {
         public:
-          Iterator() : itsIndex( 0 ), itsType(Null_) {}
+          Iterator() :
+        	  itsMemberItBegin(nullptr), itsMemberItEnd(nullptr),
+			  itsValueItBegin(nullptr), itsValueItEnd(nullptr),
+        	  itsIndex( 0 ), itsType(Null_) {}
 
           Iterator(MemberIterator begin, MemberIterator end) :
-            itsMemberItBegin(begin), itsMemberItEnd(end), itsIndex(0), itsType(Member)
+            itsMemberItBegin(begin), itsMemberItEnd(end),
+			itsValueItBegin(nullptr), itsValueItEnd(nullptr),
+			itsIndex(0), itsType(Member)
           { }
 
           Iterator(ValueIterator begin, ValueIterator end) :
-            itsValueItBegin(begin), itsValueItEnd(end), itsIndex(0), itsType(Value)
+        	itsMemberItBegin(nullptr), itsMemberItEnd(nullptr),
+            itsValueItBegin(begin), itsValueItEnd(end),
+			itsIndex(0), itsType(Value)
           { }
 
           //! Advance to the next node
@@ -488,20 +520,30 @@ namespace cereal
           /*! @throws Exception if no such named node exists */
           inline void search( const char * searchName )
           {
-            const auto len = std::strlen( searchName );
-            size_t index = 0;
-            for( auto it = itsMemberItBegin; it != itsMemberItEnd; ++it, ++index )
-            {
-              const auto currentName = it->name.GetString();
-              if( ( std::strncmp( searchName, currentName, len ) == 0 ) &&
-                  ( std::strlen( currentName ) == len ) )
-              {
-                itsIndex = index;
-                return;
-              }
-            }
+        	  size_t index = find(searchName);
+        	  if (index != npos) {
+        		  itsIndex = index;
+        		  return;
+        	  }
 
-            throw Exception("JSON Parsing failed - provided NVP not found");
+        	  std::ostringstream os;
+        	  os << "JSON Parsing failed - provided NVP not found '" << searchName << "'";
+        	  throw Exception(os.str());
+          }
+
+          inline size_t find( const char* searchName )
+          {
+              const auto len = std::strlen( searchName );
+              size_t index = 0;
+              for( auto it = itsMemberItBegin; it != itsMemberItEnd; ++it, ++index )
+              {
+                const auto currentName = it->name.GetString();
+                if( ( std::strncmp( searchName, currentName, len ) == 0 ) &&
+                    ( std::strlen( currentName ) == len ) ) {
+                  return index;
+                }
+              }
+              return npos;
           }
 
         private:
@@ -564,6 +606,11 @@ namespace cereal
         ++itsIteratorStack.back();
       }
 
+      GenericValue const&
+	  nodeValue()
+      {
+    	  return itsIteratorStack.back().value();
+      }
       //! Retrieves the current node name
       /*! @return nullptr if no name exists */
       const char * getNodeName() const
@@ -575,6 +622,24 @@ namespace cereal
       void setNextName( const char * name )
       {
         itsNextName = name;
+      }
+
+      //! Checks if a node with the next name exists
+      bool hasNextNode()
+      {
+          // The name an NVP provided with setNextName()
+          if( itsNextName )
+          {
+            // The actual name of the current node
+            auto const actualName = itsIteratorStack.back().name();
+
+            // Do a search if we don't see a name coming up, or if the names don't match
+            if( !actualName || std::strcmp( itsNextName, actualName ) != 0 ) {
+              return itsIteratorStack.back().find( itsNextName ) != npos;
+            }
+            return true;
+          }
+          return false;
       }
 
       //! Loads a value from the current node - small signed overload
@@ -613,6 +678,11 @@ namespace cereal
       //! Loads a value from the current node - string overload
       void loadValue(std::string & val) { search(); val = itsIteratorStack.back().value().GetString(); ++itsIteratorStack.back(); }
 
+      std::istream&
+	  stream()
+      {
+    	  return *itsReadStream.is_;
+      }
       // Special cases to handle various flavors of long, which tend to conflict with
       // the int32_t or int64_t on various compiler/OS combinations.  MSVC doesn't need any of this.
       #ifndef _MSC_VER
@@ -679,7 +749,10 @@ namespace cereal
       //! Loads the size for a SizeTag
       void loadSize(size_type & size)
       {
-        size = (itsIteratorStack.rbegin() + 1)->value().Size();
+    	if (itsIteratorStack.size() > 1)
+    		size = (itsIteratorStack.rbegin() + 1)->value().Size();
+    	else
+    		size = itsIteratorStack.front().value().Size();
       }
 
       //! @}
@@ -718,6 +791,31 @@ namespace cereal
   /*! NVPs do not start or finish nodes - they just set up the names */
   template <class T> inline
   void epilogue( JSONInputArchive &, NameValuePair<T> const & )
+  { }
+
+  // ######################################################################
+  //! Prologue for KVPs for JSON archives
+  /*! KVPs do not start or finish nodes - they just set up the names */
+  template <typename K, typename V> inline
+  void prologue( JSONOutputArchive &, KeyValuePair<K, V> const & )
+  { }
+
+  //! Prologue for KVPs for JSON archives
+  template <typename K, typename V> inline
+  void prologue( JSONInputArchive &, KeyValuePair<K, V> const & )
+  { }
+
+  // ######################################################################
+  //! Epilogue for KVPs for JSON archives
+  /*! KVPs do not start or finish nodes - they just set up the names */
+  template <typename K, typename V> inline
+  void epilogue( JSONOutputArchive &, KeyValuePair<K, V> const & )
+  { }
+
+  //! Epilogue for KVPs for JSON archives
+  /*! KVPs do not start or finish nodes - they just set up the names */
+  template <typename K, typename V> inline
+  void epilogue( JSONInputArchive &, KeyValuePair<K, V> const & )
   { }
 
   // ######################################################################
@@ -855,7 +953,25 @@ namespace cereal
   void CEREAL_LOAD_FUNCTION_NAME( JSONInputArchive & ar, NameValuePair<T> & t )
   {
     ar.setNextName( t.name );
-    ar( t.value );
+    if (ar.hasNextNode())
+    	ar( t.value );
+  }
+
+  //! Serializing KVP types to JSON
+  template <typename K, typename V> inline
+  void CEREAL_SAVE_FUNCTION_NAME( JSONOutputArchive & ar, KeyValuePair<K, V> const & t )
+  {
+	std::ostringstream os;
+	os << t.key;
+    ar( make_nvp(os.str(), t.value) );
+  }
+
+  template <typename K, typename V> inline
+  void CEREAL_LOAD_FUNCTION_NAME( JSONInputArchive & ar, KeyValuePair<K, V> & t )
+  {
+	std::istringstream is(ar.getNodeName());
+	is >> t.key;
+	ar( t.value );
   }
 
   //! Saving for arithmetic to JSON

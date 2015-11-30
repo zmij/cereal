@@ -196,6 +196,44 @@ namespace cereal
       @internal */
   #define CEREAL_NVP_(name, value) ::cereal::make_nvp<Archive>(name, value)
 
+  template <typename Key, typename Value>
+  struct KeyValuePair
+  {
+    using KeyType = typename std::conditional<
+      std::is_lvalue_reference<Key>::value,
+      Key,
+      typename std::decay<Key>::type>::type;
+
+    using ValueType = typename std::conditional<
+      std::is_lvalue_reference<Value>::value,
+      Value,
+      typename std::decay<Value>::type>::type;
+
+    //! Construct a MapItem from a key and a value
+    /*! @internal */
+    KeyValuePair( Key&& key_, Value&& value_ ) : key(std::forward<Key>(key_)), value(std::forward<Value>(value_)) {}
+
+    KeyValuePair & operator=( KeyValuePair const & ) = delete;
+
+    KeyType key;
+    ValueType value;
+
+//    //! Serialize the KeyValuePair with an NVP
+//    template <class Archive> inline
+//	typename std::enable_if<std::is_same<Archive, ::cereal::BinaryInputArchive>::value ||
+//    	std::is_same<Archive, ::cereal::BinaryOutputArchive>::value,
+//    void>::type CEREAL_SERIALIZE_FUNCTION_NAME(Archive & archive)
+//    {
+//      archive( key, value );
+//    }
+  };
+
+  template <class Key, class Value> inline
+  KeyValuePair<Key, Value> make_kvp(Key&& key, Value&& value)
+  {
+    return {std::forward<Key>(key), std::forward<Value>(value)};
+  }
+
   // ######################################################################
   //! A wrapper around data that can be serialized in a binary fashion
   /*! This class is used to demarcate data that can safely be serialized

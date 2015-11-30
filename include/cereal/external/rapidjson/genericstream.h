@@ -81,6 +81,17 @@ namespace rapidjson {
         return (int)os_.tellp();
       }
 
+      std::locale
+	  getloc() const
+      { return os_.getloc(); }
+
+      template < typename Manip >
+      void
+	  apply_manipulator(Manip const& m)
+      {
+    	  os_ << m;
+      }
+
       // Not implemented
       char Peek() const    { RAPIDJSON_ASSERT(false); }
       char Take()          { RAPIDJSON_ASSERT(false); }

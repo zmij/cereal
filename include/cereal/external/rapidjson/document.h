@@ -330,7 +330,13 @@ public:
 	GenericValue& SetArray() {	this->~GenericValue(); new (this) GenericValue(kArrayType); return *this; }
 
 	//! Get the number of elements in array.
-	SizeType Size() const { RAPIDJSON_ASSERT(IsArray()); return data_.a.size; }
+	SizeType Size() const {
+		RAPIDJSON_ASSERT(IsArray() || IsObject());
+		if (IsArray()) {
+			return data_.a.size;
+		}
+		return data_.o.size;
+	}
 
 	//! Get the capacity of array.
 	SizeType Capacity() const { RAPIDJSON_ASSERT(IsArray()); return data_.a.capacity; }
